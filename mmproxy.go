@@ -120,22 +120,22 @@ func dialSpoofed(ctx context.Context, client *net.TCPAddr, upstream string) (net
 	d := net.Dialer{
 		LocalAddr: client, // bind the (non-local) client address as source
 		Control: func(_, _ string, c syscall.RawConn) error {
-			var soErr error
+			var err error
 			ctrlErr := c.Control(func(fd uintptr) {
 				if client.IP.To4() != nil {
-					soErr = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
+					err = unix.SetsockoptInt(int(fd), unix.SOL_IP, unix.IP_TRANSPARENT, 1)
 				} else {
-					soErr = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
+					err = unix.SetsockoptInt(int(fd), unix.SOL_IPV6, unix.IPV6_TRANSPARENT, 1)
 				}
-				if soErr != nil {
+				if err != nil {
 					return
 				}
-				soErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+				err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 			})
 			if ctrlErr != nil {
 				return ctrlErr
 			}
-			return soErr
+			return err
 		},
 	}
 	return d.DialContext(ctx, "tcp", upstream)
