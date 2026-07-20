@@ -39,7 +39,7 @@ func init() {
 // Handler is a terminal layer4 handler. It dials the upstream using the
 // downstream client's IP:port as the socket source address.
 type Handler struct {
-	// Upstream is the backend address to proxy to, e.g. "127.0.0.1:2222".
+	// Upstream is the backend address to proxy to, e.g. "127.0.0.1:22".
 	// It MUST be a loopback address for the return-path routing to work.
 	Upstream string `json:"upstream,omitempty"`
 
