@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package l4mmproxy implements a caddy-l4 handler that proxies TCP
 // connections to a loopback upstream while preserving the original client
 // IP at the socket level, using Linux IP_TRANSPARENT.
