@@ -104,7 +104,8 @@ type closeWriter interface{ CloseWrite() error }
 
 func pipe(wg *sync.WaitGroup, dst, src net.Conn) {
 	defer wg.Done()
-	_, _ = io.Copy(dst, src)
+	buf := make([]byte, 64<<10)
+	_, _ = io.CopyBuffer(dst, src, buf)
 	if cw, ok := dst.(closeWriter); ok {
 		_ = cw.CloseWrite() // half-close so the peer sees EOF
 	}
