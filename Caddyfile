@@ -1,0 +1,27 @@
+{
+	# l4
+	layer4 {
+		:443 {
+			route {
+				mmproxy 127.0.0.1:22
+			}
+		}
+	}
+
+	# multiplexing
+	servers {
+		listener_wrappers {
+			layer4 {
+				@ssh ssh
+				route @ssh {
+					mmproxy 127.0.0.1:22
+				}
+				route
+			}
+			tls
+		}
+	}
+}
+
+some.domain {
+}
