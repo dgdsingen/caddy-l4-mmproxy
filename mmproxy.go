@@ -117,8 +117,10 @@ func pipe(wg *sync.WaitGroup, dst, src net.Conn) {
 // socket() but before bind()/connect(), which is exactly the order needed:
 // IP_TRANSPARENT must be set before the non-local bind.
 func dialSpoofed(ctx context.Context, client *net.TCPAddr, upstream string) (net.Conn, error) {
+	// bind the client ip as source (not port to avoid conflict)
+	clientAddr := &net.TCPAddr{IP: client.IP, Port: 0}
 	d := net.Dialer{
-		LocalAddr: client, // bind the (non-local) client address as source
+		LocalAddr: clientAddr,
 		Control: func(_, _ string, c syscall.RawConn) error {
 			var err error
 			ctrlErr := c.Control(func(fd uintptr) {
