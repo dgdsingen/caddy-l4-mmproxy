@@ -116,25 +116,15 @@ func userspaceCopy(dst io.Writer, src io.Reader) {
 
 // layer4 matcher가 미리 읽어둔 바이트는 down의 replay 버퍼에 있고 다른 무엇보다 먼저 upstream에 도달해야 한다.
 // 그래서 이 바이트를 먼저 flush한 뒤에야 raw 소켓을 io.Copy에 넘기며, 그때부터 커널이 나머지를 splice로 옮긴다.
-// io.MultiReader로 합쳐도 splice는 동작한다.
-// multiReader.WriteTo가 서브 리더마다 다시 디스패치하므로 소켓이 net.TCPConn.ReadFrom에 도달하기 때문이다.
-// 다만 커넥션마다 32KB 버퍼를 할당하는데 그 버퍼는 작은 prefetch 조각에만 쓰인다.
-// 따로 flush하면 그 할당을 피할 수 있다.
 //
-// useSplice=false면 unwrapping을 건너뛰고 layer4.Connection wrapper 그대로 io.Copy에 넘긴다.
-// 이 경우 down.Read가 prefetch 바이트를 자동 replay하고, TCPConn.ReadFrom도 splice 조건을 만족하지 못해
-// genericReadFrom(32KB 버퍼)로 떨어지므로 순수 userspace 복사가 된다.
+// splice 불가 시(useSplice=false이거나 내부 conn이 *net.TCPConn이 아닌 경우)
+// userspaceCopy로 대체한다. down.Read가 prefetch된 바이트를 스스로 replay하므로
+// 여기서 따로 flush하면 두 번 전송된다.
 func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 	defer closeWrite(up)
 
-	if !useSplice {
-		userspaceCopy(up, down)
-		return
-	}
-
 	src := spliceableConn(down)
-	if src == nil {
-		// down.Read가 prefetch된 바이트를 스스로 replay하므로, 여기서 따로 flush하면 두 번 전송된다.
+	if !useSplice || src == nil {
 		userspaceCopy(up, down)
 		return
 	}
@@ -150,14 +140,8 @@ func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 // upstream > client 시에는 버퍼링된 데이터가 없으므로 raw 소켓을 바로 쓸 수 있다.
 // useSplice=false면 wrapper를 유지해 userspace 경로로 복사한다.
 func copyToDownstream(down *layer4.Connection, up net.Conn, useSplice bool) {
-	if !useSplice {
-		defer closeWrite(down)
-		userspaceCopy(down, up)
-		return
-	}
-
 	dst := spliceableConn(down)
-	if dst == nil {
+	if !useSplice || dst == nil {
 		defer closeWrite(down)
 		userspaceCopy(down, up)
 		return
