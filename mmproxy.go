@@ -33,6 +33,8 @@ func init() {
 	caddy.RegisterModule(&Handler{})
 }
 
+type readerOnly struct{ io.Reader }
+type writerOnly struct{ io.Writer }
 type Handler struct {
 	// upstream address (e.g. 127.0.0.1:22)
 	// return-path 라우팅이 동작하려면 반드시 loopback 주소여야 한다.
@@ -117,7 +119,8 @@ func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 	defer closeWrite(up)
 
 	if !useSplice {
-		_, _ = io.Copy(up, down)
+		buf := make([]byte, 64<<10)
+		_, _ = io.CopyBuffer(writerOnly{up}, readerOnly{down}, buf)
 		return
 	}
 
@@ -141,7 +144,8 @@ func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 func copyToDownstream(down *layer4.Connection, up net.Conn, useSplice bool) {
 	if !useSplice {
 		defer closeWrite(down)
-		_, _ = io.Copy(down, up)
+		buf := make([]byte, 64<<10)
+		_, _ = io.CopyBuffer(writerOnly{up}, readerOnly{down}, buf)
 		return
 	}
 
