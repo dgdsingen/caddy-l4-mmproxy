@@ -105,10 +105,13 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 //
 // Bytes prefetched by the layer4 matchers live in down's replay buffer and
 // must reach the upstream before anything else, so they are flushed first and
-// only then is the bare socket handed to io.Copy. Splitting it this way is
-// what enables splice(2); wrapping both sources in an io.MultiReader would
-// defeat it, because a MultiReader matches none of the types net's splice
-// helper keys off.
+// only then is the bare socket handed to io.Copy, which lets the kernel splice
+// the rest.
+//
+// io.MultiReader would splice too -- multiReader.WriteTo re-dispatches per
+// sub-reader, so the socket still reaches net.TCPConn.ReadFrom -- but it
+// allocates a 32KB buffer per connection that only the small prefetched chunk
+// ever uses. Flushing separately avoids that allocation.
 func copyToUpstream(up net.Conn, down *layer4.Connection) {
 	defer closeWrite(up)
 
