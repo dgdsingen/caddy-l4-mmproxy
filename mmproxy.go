@@ -145,7 +145,7 @@ func copyToDownstream(down *layer4.Connection, up net.Conn, useSplice bool) {
 	if !useSplice {
 		defer closeWrite(down)
 		buf := make([]byte, 64<<10)
-		_, _ = io.CopyBuffer(writerOnly{up}, readerOnly{down}, buf)
+		_, _ = io.CopyBuffer(writerOnly{down}, readerOnly{up}, buf)
 		return
 	}
 
