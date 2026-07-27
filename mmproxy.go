@@ -196,12 +196,12 @@ func closeWrite(c net.Conn) {
 	}
 }
 
-// dialSpoofed는 출발지 주소가 클라이언트의 IP:port인 TCP 커넥션을 upstream으로 연다.
+// dialSpoofed는 출발지 주소가 client ip:port인 TCP 커넥션을 upstream으로 연다.
 // 커널이 비로컬 주소 bind를 허용하려면 IP_TRANSPARENT(CAP_NET_ADMIN)가 필요하다.
-// Go의 Dialer는 socket() 이후 bind()/connect() 이전에 Control을 실행하는데
+// Dialer는 socket() 이후 bind()/connect() 이전에 Control을 실행하는데
 // IP_TRANSPARENT는 비로컬 bind보다 먼저 설정되어야 하므로 정확히 필요한 순서다.
 func dialSpoofed(ctx context.Context, client *net.TCPAddr, upstream string) (net.Conn, error) {
-	// 출발지로 클라이언트 IP만 bind한다 (port는 충돌을 피하려고 제외)
+	// client port는 그대로 사용시 os에서 충돌날 수 있으므로 client ip만 bind
 	clientAddr := &net.TCPAddr{IP: client.IP, Port: 0}
 	d := net.Dialer{
 		LocalAddr: clientAddr,
@@ -223,14 +223,8 @@ func dialSpoofed(ctx context.Context, client *net.TCPAddr, upstream string) (net
 	return d.DialContext(ctx, "tcp", upstream)
 }
 
-// UnmarshalCaddyfile은 다음 형식을 파싱한다:
-//
-//	mmproxy <upstream>
-//	mmproxy <upstream> {
-//	    splice true|false
-//	}
 func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	d.Next() // 지시어 이름 소비
+	d.Next()
 	if !d.Args(&h.Upstream) {
 		return d.ArgErr()
 	}
