@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"syscall"
 
@@ -37,7 +38,16 @@ type Handler struct {
 	// return-path 라우팅이 동작하려면 반드시 loopback 주소여야 한다.
 	Upstream string `json:"upstream,omitempty"`
 
+	// Splice가 nil이거나 true면 커널 splice(2) 경로를 사용하고,
+	// false면 layer4.Connection wrapper를 통한 userspace io.Copy(32KB 버퍼)로 대체한다.
+	// 벤치마크로 두 경로의 성능/리소스를 비교하거나 wrapper의 byte counter가 필요할 때 false로 둔다.
+	Splice *bool `json:"splice,omitempty"`
+
 	logger *zap.Logger
+}
+
+func (h *Handler) useSplice() bool {
+	return h.Splice == nil || *h.Splice
 }
 
 func (*Handler) CaddyModule() caddy.ModuleInfo {
@@ -49,6 +59,9 @@ func (*Handler) CaddyModule() caddy.ModuleInfo {
 
 func (h *Handler) Provision(ctx caddy.Context) error {
 	h.logger = ctx.Logger()
+	h.logger.Info("mmproxy provisioned",
+		zap.String("upstream", h.Upstream),
+		zap.Bool("splice", h.useSplice()))
 	return nil
 }
 
@@ -78,12 +91,13 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 	}
 	defer up.Close()
 
+	useSplice := h.useSplice()
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		copyToUpstream(up, down)
+		copyToUpstream(up, down, useSplice)
 	})
 	wg.Go(func() {
-		copyToDownstream(down, up)
+		copyToDownstream(down, up, useSplice)
 	})
 	wg.Wait()
 	return nil
@@ -95,8 +109,17 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 // multiReader.WriteTo가 서브 리더마다 다시 디스패치하므로 소켓이 net.TCPConn.ReadFrom에 도달하기 때문이다.
 // 다만 커넥션마다 32KB 버퍼를 할당하는데 그 버퍼는 작은 prefetch 조각에만 쓰인다.
 // 따로 flush하면 그 할당을 피할 수 있다.
-func copyToUpstream(up net.Conn, down *layer4.Connection) {
+//
+// useSplice=false면 unwrapping을 건너뛰고 layer4.Connection wrapper 그대로 io.Copy에 넘긴다.
+// 이 경우 down.Read가 prefetch 바이트를 자동 replay하고, TCPConn.ReadFrom도 splice 조건을 만족하지 못해
+// genericReadFrom(32KB 버퍼)로 떨어지므로 순수 userspace 복사가 된다.
+func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 	defer closeWrite(up)
+
+	if !useSplice {
+		_, _ = io.Copy(up, down)
+		return
+	}
 
 	src := spliceableConn(down)
 	if src == nil {
@@ -114,7 +137,14 @@ func copyToUpstream(up net.Conn, down *layer4.Connection) {
 }
 
 // upstream > client 시에는 버퍼링된 데이터가 없으므로 raw 소켓을 바로 쓸 수 있다.
-func copyToDownstream(down *layer4.Connection, up net.Conn) {
+// useSplice=false면 wrapper를 유지해 userspace 경로로 복사한다.
+func copyToDownstream(down *layer4.Connection, up net.Conn, useSplice bool) {
+	if !useSplice {
+		defer closeWrite(down)
+		_, _ = io.Copy(down, up)
+		return
+	}
+
 	dst := spliceableConn(down)
 	if dst == nil {
 		defer closeWrite(down)
@@ -182,7 +212,12 @@ func dialSpoofed(ctx context.Context, client *net.TCPAddr, upstream string) (net
 	return d.DialContext(ctx, "tcp", upstream)
 }
 
-// UnmarshalCaddyfile은 다음 형식을 파싱한다: mmproxy <upstream>
+// UnmarshalCaddyfile은 다음 형식을 파싱한다:
+//
+//	mmproxy <upstream>
+//	mmproxy <upstream> {
+//	    splice true|false
+//	}
 func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	d.Next() // 지시어 이름 소비
 	if !d.Args(&h.Upstream) {
@@ -190,6 +225,22 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 	if d.NextArg() {
 		return d.ArgErr()
+	}
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		switch d.Val() {
+		case "splice":
+			var v string
+			if !d.AllArgs(&v) {
+				return d.ArgErr()
+			}
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return d.Errf("invalid splice value %q: %v", v, err)
+			}
+			h.Splice = &b
+		default:
+			return d.Errf("unknown mmproxy option %q", d.Val())
+		}
 	}
 	return nil
 }
