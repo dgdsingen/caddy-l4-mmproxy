@@ -33,15 +33,13 @@ func init() {
 	caddy.RegisterModule(&Handler{})
 }
 
-type readerOnly struct{ io.Reader }
-type writerOnly struct{ io.Writer }
 type Handler struct {
 	// upstream address (e.g. 127.0.0.1:22)
 	// return-path 라우팅이 동작하려면 반드시 loopback 주소여야 한다.
 	Upstream string `json:"upstream,omitempty"`
 
 	// Splice가 nil이거나 true면 커널 splice(2) 경로를 사용하고,
-	// false면 layer4.Connection wrapper를 통한 userspace io.Copy(32KB 버퍼)로 대체한다.
+	// false면 layer4.Connection wrapper를 통한 userspace copy로 대체한다.
 	// 벤치마크로 두 경로의 성능/리소스를 비교하거나 wrapper의 byte counter가 필요할 때 false로 둔다.
 	Splice *bool `json:"splice,omitempty"`
 
@@ -105,6 +103,17 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 	return nil
 }
 
+// io.CopyBuffer(dst, src, buf) 호출시 dst.WriteTo || src.ReadFrom 하나라도 있으면
+// buf를 무시하고 바로 해당 method를 호출해서 끝내버리므로 buf 할당은 낭비다.
+// 아래 struct로 감싸면 강제로 dst.Write, src.Read 만 존재하게 되므로 buf를 무조건 타게 된다.
+type readerOnly struct{ io.Reader }
+type writerOnly struct{ io.Writer }
+
+func userspaceCopy(dst io.Writer, src io.Reader) {
+	buf := make([]byte, 64<<10)
+	_, _ = io.CopyBuffer(writerOnly{dst}, readerOnly{src}, buf)
+}
+
 // layer4 matcher가 미리 읽어둔 바이트는 down의 replay 버퍼에 있고 다른 무엇보다 먼저 upstream에 도달해야 한다.
 // 그래서 이 바이트를 먼저 flush한 뒤에야 raw 소켓을 io.Copy에 넘기며, 그때부터 커널이 나머지를 splice로 옮긴다.
 // io.MultiReader로 합쳐도 splice는 동작한다.
@@ -119,15 +128,14 @@ func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 	defer closeWrite(up)
 
 	if !useSplice {
-		buf := make([]byte, 64<<10)
-		_, _ = io.CopyBuffer(writerOnly{up}, readerOnly{down}, buf)
+		userspaceCopy(up, down)
 		return
 	}
 
 	src := spliceableConn(down)
 	if src == nil {
 		// down.Read가 prefetch된 바이트를 스스로 replay하므로, 여기서 따로 flush하면 두 번 전송된다.
-		_, _ = io.Copy(up, down)
+		userspaceCopy(up, down)
 		return
 	}
 
@@ -144,15 +152,14 @@ func copyToUpstream(up net.Conn, down *layer4.Connection, useSplice bool) {
 func copyToDownstream(down *layer4.Connection, up net.Conn, useSplice bool) {
 	if !useSplice {
 		defer closeWrite(down)
-		buf := make([]byte, 64<<10)
-		_, _ = io.CopyBuffer(writerOnly{down}, readerOnly{up}, buf)
+		userspaceCopy(down, up)
 		return
 	}
 
 	dst := spliceableConn(down)
 	if dst == nil {
 		defer closeWrite(down)
-		_, _ = io.Copy(down, up)
+		userspaceCopy(down, up)
 		return
 	}
 
