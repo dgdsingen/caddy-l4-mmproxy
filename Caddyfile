@@ -3,9 +3,7 @@
 	layer4 {
 		:443 {
 			route {
-				mmproxy 127.0.0.1:22 {
-					splice true
-				}
+				mmproxy 127.0.0.1:22
 			}
 		}
 	}
@@ -17,7 +15,7 @@
 				@ssh ssh
 				route @ssh {
 					mmproxy 127.0.0.1:22 {
-						splice false
+						splice false # default(nil)=true
 					}
 				}
 				route
