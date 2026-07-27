@@ -90,24 +90,90 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 	}
 	defer up.Close()
 
-	// Read from `down` (the Connection), not the raw underlying conn, so any
-	// bytes prefetched by upstream matchers are replayed correctly.
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go pipe(&wg, up, down) // client -> upstream
-	go pipe(&wg, down, up) // upstream -> client
+	wg.Go(func() {
+		copyToUpstream(up, down)
+	})
+	wg.Go(func() {
+		copyToDownstream(down, up)
+	})
 	wg.Wait()
 	return nil
 }
 
+// copyToUpstream relays client -> upstream.
+//
+// Bytes prefetched by the layer4 matchers live in down's replay buffer and
+// must reach the upstream before anything else, so they are flushed first and
+// only then is the bare socket handed to io.Copy. Splitting it this way is
+// what enables splice(2); wrapping both sources in an io.MultiReader would
+// defeat it, because a MultiReader matches none of the types net's splice
+// helper keys off.
+func copyToUpstream(up net.Conn, down *layer4.Connection) {
+	defer closeWrite(up)
+
+	src := spliceableConn(down)
+	if src == nil {
+		// down.Read replays the prefetched bytes itself, so do not flush them
+		// separately here or they would be sent twice.
+		_, _ = io.Copy(up, down)
+		return
+	}
+
+	if pending := down.MatchingBytes(); len(pending) > 0 {
+		if _, err := up.Write(pending); err != nil {
+			return
+		}
+	}
+	_, _ = io.Copy(up, src)
+}
+
+// copyToDownstream relays upstream -> client. Nothing is buffered in this
+// direction, so the bare socket can be used straight away.
+func copyToDownstream(down *layer4.Connection, up net.Conn) {
+	dst := spliceableConn(down)
+	if dst == nil {
+		defer closeWrite(down)
+		_, _ = io.Copy(down, up)
+		return
+	}
+
+	defer closeWrite(dst)
+	_, _ = io.Copy(dst, up)
+}
+
+// spliceableConn returns the raw TCP socket behind cx, or nil when cx wraps
+// anything else (TLS termination, a packet conn, a listener wrapper). Only a
+// bare *net.TCPConn may bypass cx: any other wrapper owns Read/Write semantics
+// that must not be skipped.
+//
+// Bypassing cx is what lets the kernel move bytes with splice(2). io.Copy
+// reaches splice only through net.TCPConn.ReadFrom, whose type switch accepts
+// a *net.TCPConn source but not a *layer4.Connection. cx cannot qualify on its
+// own either: it embeds net.Conn as an interface, so it promotes neither
+// ReadFrom nor WriteTo no matter what concrete socket is inside.
+//
+// Trade-off: cx.bytesRead / cx.bytesWritten stop advancing, so caddy-l4's
+// debug-level connection stats report only the prefetched bytes. Those
+// counters feed nothing but that one log line.
+func spliceableConn(cx *layer4.Connection) *net.TCPConn {
+	tc, _ := cx.Conn.(*net.TCPConn)
+	return tc
+}
+
 type closeWriter interface{ CloseWrite() error }
 
-func pipe(wg *sync.WaitGroup, dst, src net.Conn) {
-	defer wg.Done()
-	buf := make([]byte, 128<<10)
-	_, _ = io.CopyBuffer(dst, src, buf)
-	if cw, ok := dst.(closeWriter); ok {
-		_ = cw.CloseWrite() // half-close so the peer sees EOF
+// closeWrite half-closes the write side so the peer sees EOF.
+//
+// layer4.Connection embeds net.Conn as an interface, so CloseWrite is not
+// promoted through it and a direct type assertion always fails. Unwrap first,
+// otherwise the downstream client never gets an early FIN.
+func closeWrite(c net.Conn) {
+	if cx, ok := c.(*layer4.Connection); ok {
+		c = cx.Conn
+	}
+	if cw, ok := c.(closeWriter); ok {
+		_ = cw.CloseWrite()
 	}
 }
 
