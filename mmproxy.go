@@ -38,16 +38,14 @@ type Handler struct {
 	// return-path 라우팅이 동작하려면 반드시 loopback 주소여야 한다.
 	Upstream string `json:"upstream,omitempty"`
 
-	// Splice가 nil이거나 true면 커널 splice(2) 경로를 사용하고,
-	// false면 layer4.Connection wrapper를 통한 userspace copy로 대체한다.
-	// 벤치마크로 두 경로의 성능/리소스를 비교하거나 wrapper의 byte counter가 필요할 때 false로 둔다.
+	// Splice == true면 splice(2) 사용, nil || false면 userspace copy 사용
 	Splice *bool `json:"splice,omitempty"`
 
 	logger *zap.Logger
 }
 
 func (h *Handler) useSplice() bool {
-	return h.Splice == nil || *h.Splice
+	return h.Splice != nil && *h.Splice
 }
 
 func (*Handler) CaddyModule() caddy.ModuleInfo {
