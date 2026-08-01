@@ -102,10 +102,7 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 }
 
 var bufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 64<<10)
-		return &buf
-	},
+	New: func() any { return new(make([]byte, 64<<10)) },
 }
 
 // io.CopyBuffer(dst, src, buf) 호출시 dst.WriteTo || src.ReadFrom 하나라도 있으면
