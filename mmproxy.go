@@ -101,6 +101,13 @@ func (h *Handler) Handle(down *layer4.Connection, _ layer4.Handler) error {
 	return nil
 }
 
+var bufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 64<<10)
+		return &buf
+	},
+}
+
 // io.CopyBuffer(dst, src, buf) 호출시 dst.WriteTo || src.ReadFrom 하나라도 있으면
 // buf를 무시하고 바로 해당 method를 호출해서 끝내버리므로 buf 할당은 낭비다.
 // 아래 struct로 감싸면 강제로 dst.Write, src.Read 만 존재하게 되므로 buf를 무조건 타게 된다.
@@ -108,8 +115,9 @@ type readerOnly struct{ io.Reader }
 type writerOnly struct{ io.Writer }
 
 func userspaceCopy(dst io.Writer, src io.Reader) {
-	buf := make([]byte, 64<<10)
-	_, _ = io.CopyBuffer(writerOnly{dst}, readerOnly{src}, buf)
+	buf := bufPool.Get().(*[]byte)
+	defer bufPool.Put(buf)
+	_, _ = io.CopyBuffer(writerOnly{dst}, readerOnly{src}, *buf)
 }
 
 // layer4 matcher가 미리 읽어둔 바이트는 down의 replay 버퍼에 있고 다른 무엇보다 먼저 upstream에 도달해야 한다.
